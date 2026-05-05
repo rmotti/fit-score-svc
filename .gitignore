@@ -217,9 +217,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Artifacts (large binary files — upload manually to Railway)
-artifacts/*.pkl
+# Datasets brutos (não commitar CSVs grandes)
 artifacts/*.csv
-
-# Utilitários locais
-generate_scalers.py

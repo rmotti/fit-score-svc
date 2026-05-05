@@ -149,6 +149,11 @@ def recommend_candidates(
 
     candidates = candidates.copy()
 
+    # Cap candidates before Gower to avoid OOM (matrix is O(n_cand × profile_size))
+    MAX_CANDIDATES = 3000
+    if len(candidates) > MAX_CANDIDATES:
+        candidates = candidates.sample(MAX_CANDIDATES, random_state=42)
+
     if max_market_value_eur is not None:
         max_fee_norm = normalize_fee(max_market_value_eur, fee_scaler)
         max_fee_norm = max(0.0, min(1.0, max_fee_norm))
