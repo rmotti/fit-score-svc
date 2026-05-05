@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(New-Item -ItemType Directory -Path \"c:\\\\Users\\\\rodri\\\\Desktop\\\\dev\\\\pessoal\\\\carreer-hub\\\\fit-score-svc\\\\app\" -Force)",
+      "PowerShell(New-Item -ItemType Directory -Path \"c:\\\\Users\\\\rodri\\\\Desktop\\\\dev\\\\pessoal\\\\carreer-hub\\\\fit-score-svc\\\\artifacts\" -Force)"
+    ]
+  }
+}
