@@ -52,3 +52,31 @@ class BatchResponse(BaseModel):
     position_group: str
     objective: str
     results: list[BatchResultItem]
+
+
+class RecommendRequest(BaseModel):
+    club_name: str
+    position_group: Literal["GK","CB","LB","RB","DM","CM","LM","RM","AM","LW","RW","SS","CF"]
+    objective: Objective = "balanced"
+    max_market_value_eur: Optional[float] = Field(None, ge=0)
+    fee_type: Optional[Literal["paid", "free", "undisclosed"]] = None
+    top_k: int = Field(20, ge=1, le=100)
+    sample_size: int = Field(2000, ge=100, le=10000)
+
+
+class RecommendResultItem(BaseModel):
+    fit_score: float
+    player_id: Optional[int] = None
+    player_name: Optional[str] = None
+    nationality: Optional[str] = None
+    origin_league: Optional[str] = None
+    fee_type: Optional[str] = None
+
+
+class RecommendResponse(BaseModel):
+    club_name: str
+    position_group: str
+    objective: str
+    profile_size: int
+    candidates_evaluated: int
+    results: list[RecommendResultItem]

@@ -113,3 +113,91 @@ def compute_fit_score(
         "profile_size": profile_size,
         "profile_found": True,
     }
+
+
+def recommend_candidates(
+    club_profiles: dict,
+    position_index: dict,
+    club_name: str,
+    position_group: str,
+    objective: str,
+    max_market_value_eur: Optional[float],
+    fee_type: Optional[str],
+    fee_scaler: Optional[MinMaxScaler],
+    top_k: int = 20,
+    sample_size: int = 2000,
+    min_profile_size: int = 5,
+) -> dict:
+    key = (club_name, position_group)
+    profile = club_profiles.get(key)
+
+    if profile is None or len(profile) == 0:
+        return {"error": "profile_not_found", "profile_size": 0, "candidates_evaluated": 0, "results": []}
+
+    profile = OBJECTIVE_FILTERS[objective](profile).copy()
+    profile_size = len(profile)
+
+    if profile_size < min_profile_size:
+        return {"error": "profile_too_small", "profile_size": profile_size, "candidates_evaluated": 0, "results": []}
+
+    if profile_size > sample_size:
+        profile = profile.sample(sample_size, random_state=42)
+
+    candidates = position_index.get(position_group)
+    if candidates is None or len(candidates) == 0:
+        return {"error": "no_candidates", "profile_size": profile_size, "candidates_evaluated": 0, "results": []}
+
+    candidates = candidates.copy()
+
+    if max_market_value_eur is not None:
+        max_fee_norm = normalize_fee(max_market_value_eur, fee_scaler)
+        max_fee_norm = max(0.0, min(1.0, max_fee_norm))
+        candidates = candidates[candidates["fee_norm"] <= max_fee_norm]
+
+    if fee_type is not None:
+        candidates = candidates[candidates["fee_type"] == fee_type]
+
+    if len(candidates) == 0:
+        return {"error": None, "profile_size": profile_size, "candidates_evaluated": 0, "results": []}
+
+    n_candidates = len(candidates)
+    profile_features = profile[FEATURES].fillna("Other")
+    candidate_features = candidates[FEATURES].fillna("Other")
+
+    combined = pd.concat([candidate_features, profile_features], ignore_index=True)
+
+    try:
+        dist_matrix = gower.gower_matrix(combined, cat_features=CAT_FEATURES)
+    except Exception as e:
+        logger.error(f"Erro ao calcular Gower distance (recommend): {e}")
+        return {"error": "gower_error", "profile_size": profile_size, "candidates_evaluated": n_candidates, "results": []}
+
+    mean_distances = dist_matrix[:n_candidates, n_candidates:].mean(axis=1)
+    fit_scores = np.clip(1.0 - mean_distances, 0.0, 1.0)
+
+    candidates = candidates.reset_index(drop=True).copy()
+    candidates["fit_score"] = fit_scores
+
+    candidates = candidates.sort_values("fit_score", ascending=False)
+    candidates = candidates.drop_duplicates(subset=["player_id"], keep="first")
+    top = candidates.head(top_k)
+
+    extra_cols = [c for c in candidates.columns if c not in FEATURES and c != "fit_score"]
+
+    results = []
+    for _, row in top.iterrows():
+        results.append({
+            "fit_score": round(float(row["fit_score"]), 4),
+            "player_id": int(row["player_id"]) if "player_id" in row and pd.notna(row.get("player_id")) else None,
+            "player_name": row.get("player_name") if pd.notna(row.get("player_name")) else None,
+            "nationality": row.get("nationality"),
+            "origin_league": row.get("origin_league"),
+            "fee_type": row.get("fee_type"),
+        })
+
+    return {
+        "error": None,
+        "profile_size": profile_size,
+        "candidates_evaluated": n_candidates,
+        "results": results,
+    }

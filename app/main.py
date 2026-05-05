@@ -5,8 +5,9 @@ from app import profiles as store
 from app.schemas import (
     ScoreRequest, ScoreResponse,
     BatchRequest, BatchResponse, BatchResultItem,
+    RecommendRequest, RecommendResponse,
 )
-from app.scoring import compute_fit_score
+from app.scoring import compute_fit_score, recommend_candidates
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -84,6 +85,32 @@ def score_batch(req: BatchRequest):
         position_group=req.position_group,
         objective=req.objective,
         results=results,
+    )
+
+
+@app.post("/recommend", response_model=RecommendResponse)
+def recommend(req: RecommendRequest):
+    data = recommend_candidates(
+        club_profiles=store.club_profiles,
+        position_index=store.position_index,
+        club_name=req.club_name,
+        position_group=req.position_group,
+        objective=req.objective,
+        max_market_value_eur=req.max_market_value_eur,
+        fee_type=req.fee_type,
+        fee_scaler=store.fee_scaler,
+        top_k=req.top_k,
+        sample_size=req.sample_size,
+    )
+    if data.get("error") == "profile_not_found":
+        raise HTTPException(status_code=404, detail=f"Perfil não encontrado para '{req.club_name}' / {req.position_group}")
+    return RecommendResponse(
+        club_name=req.club_name,
+        position_group=req.position_group,
+        objective=req.objective,
+        profile_size=data["profile_size"],
+        candidates_evaluated=data["candidates_evaluated"],
+        results=data["results"],
     )
 
 
