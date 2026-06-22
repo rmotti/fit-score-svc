@@ -15,17 +15,17 @@ OBJECTIVE_FILTERS = {
     "title":    lambda df: df[df["fee_norm"] >= 0.50],
 }
 
-FEATURES = ["nationality", "origin_league", "age_norm", "fee_norm", "fee_type"]
-CAT_FEATURES = [True, True, False, False, True]  # mesmo índice que FEATURES
+FEATURES = ["nationality", "origin_league", "age_norm"]
+CAT_FEATURES = [True, True, False]  # mesmo índice que FEATURES
 
-# Pesos por feature na Gower. `fee_norm` e `fee_type` codificam a MESMA ideia (custo) e
-# são correlacionados (free ⇒ fee_norm=0), então com peso igual o custo somaria 40% da
-# distância — duplo-contagem. Aqui custo = um conceito só (0.25 total, 0.125 cada), igual
-# a nacionalidade/liga/idade (0.25 cada). Sem isso, um candidato pago despencava em clubes
-# de histórico free-dominado (ex.: Inter CF: 18 → 51). O dado de fee do dataset também é
-# incompleto (muitos pagos registrados como free/0), o que reforça não confiar nele a 40%.
+# O fit responde "é o TIPO de jogador que o clube contrata" — e usa só dado confiável.
+# Custo (fee_norm/fee_type) foi REMOVIDO das features: ~69% das transferências do dataset
+# vêm como "free"/0 (fee ausente/não-divulgado registrado como grátis — Chelsea, Man City
+# etc. aparecem 60-70% "de graça"), então era ~70% ruído. Além disso custo/orçamento já é
+# tratado fora do fit, no componente marketValue do scout score (relativo ao budget, com
+# dado confiável) — manter aqui era redundante. Pesos iguais entre as 3 dimensões restantes.
 # IMPORTANTE: usado em TODA gower_matrix (baseline E scoring) — a régua precisa ser a mesma.
-FEATURE_WEIGHTS = np.array([1.0, 1.0, 1.0, 0.5, 0.5])
+FEATURE_WEIGHTS = np.array([1.0, 1.0, 1.0])
 
 # Cap padrão de amostragem do perfil. Usado no scoring E na pré-computação dos
 # baselines (profiles.load_artifacts) — precisam usar o MESMO subset pra calibração
@@ -153,17 +153,12 @@ def compute_fit_score(
         # seguro: sem régua de calibração não há score.
         return {"fit_score": None, "confidence": "low", "profile_size": profile_size, "profile_found": True}
 
-    age_norm = normalize_age(age, age_scaler)
-    fee_norm = normalize_fee(market_value_eur, fee_scaler)
-    age_norm = max(0.0, min(1.0, age_norm))
-    fee_norm = max(0.0, min(1.0, fee_norm))
+    age_norm = max(0.0, min(1.0, normalize_age(age, age_scaler)))
 
     candidate_row = {
         "nationality":    nationality or "Other",
         "origin_league":  origin_league or "unknown",
         "age_norm":       age_norm,
-        "fee_norm":       fee_norm,
-        "fee_type":       fee_type,
     }
 
     profile_features = profile[FEATURES].copy()
@@ -197,17 +192,13 @@ def _confidence(profile_size: int) -> str:
     return "low"
 
 
-# Conceitos do breakdown do fit. Agrupa fee_norm+fee_type num único "cost" (mesmo
-# racional do FEATURE_WEIGHTS: custo é um conceito só). Cada item lista as features
-# da Gower que o compõem; o peso do conceito é a soma dos pesos das suas features.
+# Conceitos do breakdown do fit — um por feature da Gower. Cada item lista as features
+# que o compõem; o peso do conceito é a soma dos pesos das suas features.
 _FIT_CONCEPTS = [
     ("nationality", ["nationality"]),
     ("origin_league", ["origin_league"]),
     ("age", ["age_norm"]),
-    ("cost", ["fee_norm", "fee_type"]),
 ]
-
-_FEE_TYPE_LABEL = {"paid": "paid", "free": "free", "undisclosed": "undisclosed"}
 
 
 def _feature_cand_distances(profile: pd.DataFrame, feature: str, cand_value) -> np.ndarray:
@@ -233,39 +224,27 @@ def _feature_loo(profile: pd.DataFrame, feature: str) -> np.ndarray:
     return np.array([np.abs(x - x[i]).sum() / (n - 1) for i in range(n)])
 
 
-def _concept_context(profile: pd.DataFrame, key: str, age_scaler, fee_scaler) -> str:
+def _concept_context(profile: pd.DataFrame, key: str, age_scaler) -> str:
     """Short summary of what the club typically signs on that dimension."""
     if key in ("nationality", "origin_league"):
         feature = "nationality" if key == "nationality" else "origin_league"
         vc = profile[feature].fillna("Other").value_counts(normalize=True).head(2)
         return " · ".join(f"{v} {p:.0%}" for v, p in vc.items())
-    if key == "age":
-        med_norm = float(profile["age_norm"].median())
-        if age_scaler is not None:
-            med = float(age_scaler.inverse_transform([[med_norm]])[0][0])
-        else:
-            med = med_norm * (_AGE_TRAIN_MAX - _AGE_TRAIN_MIN) + _AGE_TRAIN_MIN
-        return f"club usually ~{med:.0f} y/o"
-    # cost
-    free_pct = (profile["fee_type"] == "free").mean()
-    med_norm = float(profile["fee_norm"].median())
-    if fee_scaler is not None:
-        med_log = float(fee_scaler.inverse_transform([[med_norm]])[0][0])
+    # age
+    med_norm = float(profile["age_norm"].median())
+    if age_scaler is not None:
+        med = float(age_scaler.inverse_transform([[med_norm]])[0][0])
     else:
-        med_log = med_norm * (_FEE_LOG_TRAIN_MAX - _FEE_LOG_TRAIN_MIN) + _FEE_LOG_TRAIN_MIN
-    med_eur = float(np.expm1(med_log))
-    return f"{free_pct:.0%} free · median €{med_eur / 1e6:.1f}M"
+        med = med_norm * (_AGE_TRAIN_MAX - _AGE_TRAIN_MIN) + _AGE_TRAIN_MIN
+    return f"club usually ~{med:.0f} y/o"
 
 
-def _candidate_value_str(key: str, nationality, origin_league, age, market_value_eur, fee_type) -> str:
+def _candidate_value_str(key: str, nationality, origin_league, age) -> str:
     if key == "nationality":
         return nationality or "Other"
     if key == "origin_league":
         return origin_league or "unknown"
-    if key == "age":
-        return f"{age} y/o"
-    mv = "no value" if not market_value_eur else f"€{market_value_eur / 1e6:.1f}M"
-    return f"{mv} · {_FEE_TYPE_LABEL.get(fee_type, fee_type)}"
+    return f"{age} y/o"  # age
 
 
 def explain_fit_score(
@@ -301,13 +280,10 @@ def explain_fit_score(
                 "profile_found": True, "breakdown": []}
 
     age_norm = max(0.0, min(1.0, normalize_age(age, age_scaler)))
-    fee_norm = max(0.0, min(1.0, normalize_fee(market_value_eur, fee_scaler)))
     cand_vals = {
         "nationality": nationality or "Other",
         "origin_league": origin_league or "unknown",
         "age_norm": age_norm,
-        "fee_norm": fee_norm,
-        "fee_type": fee_type,
     }
 
     # fit geral — reusa compute_fit_score pra garantir o MESMO número do /score
@@ -328,8 +304,8 @@ def explain_fit_score(
             "key": key,
             "weight": round(weight, 3),
             "score": score,
-            "candidate_value": _candidate_value_str(key, nationality, origin_league, age, market_value_eur, fee_type),
-            "club_context": _concept_context(profile, key, age_scaler, fee_scaler),
+            "candidate_value": _candidate_value_str(key, nationality, origin_league, age),
+            "club_context": _concept_context(profile, key, age_scaler),
         })
 
     return {

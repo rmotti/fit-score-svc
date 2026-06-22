@@ -139,34 +139,27 @@ A escala 0→100 quebraria quem assumia 0–1. Ajustado junto:
   o desalinhamento na janela de deploy é transitório e auto-corrige. O front (repo separado) que
   formata `fitScore` precisa parar de multiplicar por 100, se fizer.
 
-## Peso das features (anti-duplo-contagem de custo)
+## Features do fit — custo removido
 
-`fee_norm` e `fee_type` codificam a mesma ideia (custo) e são correlacionados (free ⇒
-`fee_norm=0`). Com peso igual, custo somava **40%** da distância Gower — duplo-contagem. Um
-candidato pago despencava em clubes de histórico free-dominado, e o dado de fee do dataset é
-incompleto (muito pago registrado como free/0), então confiar nele a 40% é arriscado.
+O fit usa **3 features**: `nationality`, `origin_league`, `age_norm` (pesos iguais em
+`FEATURE_WEIGHTS = [1, 1, 1]`). Responde "**é o tipo de jogador que o clube contrata**".
 
-`FEATURE_WEIGHTS = [1, 1, 1, 0.5, 0.5]` em [`scoring.py`](../app/scoring.py) trata custo como
-**um conceito só (0.25 total)**, igual a nacionalidade/liga/idade. Aplicado em **toda**
-`gower_matrix` (baseline E scoring — a régua tem que ser a mesma). Efeito medido (queda free→paid):
+**Custo (`fee_norm` + `fee_type`) foi removido das features**, por dois motivos:
 
-| clube | paid% | 40% (antes) | **25% (agora)** |
-|---|---|---|---|
-| AC Milan CB / Ajax CB (pagam) | ~50% | ~0 | ~0 |
-| Chelsea CB | 24% | 76 | **63** |
-| Inter CF   | 17% | 82 | **49** |
-| Dynamo Kyiv CF | 12% | 90 | **71** |
+1. **Dado ~70% lixo.** No dataset, **69% de todas as transferências** vêm como `free`/`fee_norm=0`
+   (fee ausente/não-divulgado registrado como grátis). Os maiores gastadores do mundo aparecem
+   60–70% "de graça" (Chelsea 67%, Man City 63%, Juventus 71%, Man Utd 62%) — impossível na
+   realidade. `fee_norm` e `fee_type` saem da mesma origem, então estavam contaminados juntos.
+2. **Redundante.** Custo/orçamento já é tratado **fora** do fit, no componente `marketValue` do
+   scout score (relativo ao budget do save, com dado confiável do FC26 — trabalho do B-003).
 
-Clubes que pagam seguem imunes; nos free-dominated o candidato pago leva um desconto **real
-mas não catastrófico** (cai pra ~30–50, não pra ~10–24). Pra afrouxar mais é uma linha: baixar
-os dois últimos pesos (ex.: `0.375` → custo 20%, `0.1667` → custo 10%).
+> Histórico: o custo já passou por anti-duplo-contagem (40% → 25% do peso) antes de ser removido
+> de vez. As features de custo seguem nos perfis (`.pkl`) — o filtro de objetivo `title`
+> (`fee_norm >= 0.50`) ainda as usa —, só não entram mais na distância Gower do fit.
 
 ## Ressalvas
 
 - **Saturação no topo:** vários candidatos podem ser mais próximos que qualquer membro real e
   empatar em 100. Mitigado com interpolação linear na distribuição-baseline.
-- **Dimensão `fee`:** clubes de histórico quase todo `free` ainda penalizam candidatos `paid`,
-  mas de forma proporcional após o repeso de custo pra 0.25 (ver seção acima). É sinal legítimo
-  dos dados (padrão real de contratação), não artefato da calibração.
 - **Perfis pequenos** (< 5) continuam retornando `fit_score: null` / `confidence` por
   `profile_size`, igual a hoje.

@@ -38,7 +38,7 @@ class ExplainRequest(ScoreRequest):
 
 
 class FitBreakdownItem(BaseModel):
-    key: Literal["nationality", "origin_league", "age", "cost"]
+    key: Literal["nationality", "origin_league", "age"]
     weight: float                  # 0-1, peso do conceito na Gower
     score: Optional[float]         # 0-100 calibrado vs. as contratações reais do clube
     candidate_value: str           # valor do candidato nessa dimensão (ex.: "England")
