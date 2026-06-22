@@ -207,7 +207,7 @@ _FIT_CONCEPTS = [
     ("cost", ["fee_norm", "fee_type"]),
 ]
 
-_FEE_TYPE_PT = {"paid": "compra", "free": "de graça", "undisclosed": "não revelado"}
+_FEE_TYPE_LABEL = {"paid": "paid", "free": "free", "undisclosed": "undisclosed"}
 
 
 def _feature_cand_distances(profile: pd.DataFrame, feature: str, cand_value) -> np.ndarray:
@@ -234,7 +234,7 @@ def _feature_loo(profile: pd.DataFrame, feature: str) -> np.ndarray:
 
 
 def _concept_context(profile: pd.DataFrame, key: str, age_scaler, fee_scaler) -> str:
-    """Resumo curto (PT) do que o clube costuma contratar naquela dimensão."""
+    """Short summary of what the club typically signs on that dimension."""
     if key in ("nationality", "origin_league"):
         feature = "nationality" if key == "nationality" else "origin_league"
         vc = profile[feature].fillna("Other").value_counts(normalize=True).head(2)
@@ -245,7 +245,7 @@ def _concept_context(profile: pd.DataFrame, key: str, age_scaler, fee_scaler) ->
             med = float(age_scaler.inverse_transform([[med_norm]])[0][0])
         else:
             med = med_norm * (_AGE_TRAIN_MAX - _AGE_TRAIN_MIN) + _AGE_TRAIN_MIN
-        return f"clube costuma ~{med:.0f} anos"
+        return f"club usually ~{med:.0f} y/o"
     # cost
     free_pct = (profile["fee_type"] == "free").mean()
     med_norm = float(profile["fee_norm"].median())
@@ -254,7 +254,7 @@ def _concept_context(profile: pd.DataFrame, key: str, age_scaler, fee_scaler) ->
     else:
         med_log = med_norm * (_FEE_LOG_TRAIN_MAX - _FEE_LOG_TRAIN_MIN) + _FEE_LOG_TRAIN_MIN
     med_eur = float(np.expm1(med_log))
-    return f"{free_pct:.0%} de graça · mediana €{med_eur / 1e6:.1f}M"
+    return f"{free_pct:.0%} free · median €{med_eur / 1e6:.1f}M"
 
 
 def _candidate_value_str(key: str, nationality, origin_league, age, market_value_eur, fee_type) -> str:
@@ -263,9 +263,9 @@ def _candidate_value_str(key: str, nationality, origin_league, age, market_value
     if key == "origin_league":
         return origin_league or "unknown"
     if key == "age":
-        return f"{age} anos"
-    mv = "sem valor" if not market_value_eur else f"€{market_value_eur / 1e6:.1f}M"
-    return f"{mv} · {_FEE_TYPE_PT.get(fee_type, fee_type)}"
+        return f"{age} y/o"
+    mv = "no value" if not market_value_eur else f"€{market_value_eur / 1e6:.1f}M"
+    return f"{mv} · {_FEE_TYPE_LABEL.get(fee_type, fee_type)}"
 
 
 def explain_fit_score(
