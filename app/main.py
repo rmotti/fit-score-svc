@@ -153,6 +153,8 @@ def profile(req: ArchetypeRequest):
         objective=req.objective,
         age_scaler=store.age_scaler,
         top_k_categories=req.top_k_categories,
+        include_transfers=req.include_transfers,
+        top_transfers=req.top_transfers,
     )
     if data.get("error") == "profile_not_found":
         raise HTTPException(status_code=404, detail=f"Perfil não encontrado para '{req.club_name}' / {req.position_group}")

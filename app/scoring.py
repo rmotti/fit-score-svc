@@ -421,6 +421,8 @@ def get_club_archetype(
     top_k_categories: int = 5,
     min_profile_size: int = 5,
     sample_size: int = DEFAULT_SAMPLE_SIZE,
+    include_transfers: bool = False,
+    top_transfers: int = 20,
 ) -> dict:
     key = (club_name, position_group)
     profile = club_profiles.get(key)
@@ -448,7 +450,7 @@ def get_club_archetype(
             for val, cnt in counts.head(k).items()
         ]
 
-    return {
+    result: dict = {
         "profile_size": profile_size,
         "confidence": _confidence(profile_size),
         "archetype": {
@@ -461,3 +463,24 @@ def get_club_archetype(
             "origin_league": top_distribution(profile["origin_league"], top_k_categories),
         },
     }
+
+    if include_transfers and "player_name" in profile.columns:
+        # Sort most recent first; fall back to original order when season is absent
+        df = profile.copy()
+        if "transfer_season" in df.columns:
+            df = df.sort_values("transfer_season", ascending=False, na_position="last")
+        transfers = []
+        for _, row in df.head(top_transfers).iterrows():
+            transfers.append({
+                "player_name": row.get("player_name") if pd.notna(row.get("player_name")) else None,
+                "player_id": int(row["player_id"]) if "player_id" in row and pd.notna(row.get("player_id")) else None,
+                "transfer_season": str(row["transfer_season"]) if "transfer_season" in row and pd.notna(row.get("transfer_season")) else None,
+                "from_club_name": row.get("from_club_name") if "from_club_name" in row and pd.notna(row.get("from_club_name")) else None,
+                "nationality": row.get("nationality") if pd.notna(row.get("nationality")) else None,
+                "origin_league": row.get("origin_league") if pd.notna(row.get("origin_league")) else None,
+            })
+        result["transfers"] = transfers
+    elif include_transfers:
+        result["transfers"] = []
+
+    return result

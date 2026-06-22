@@ -117,6 +117,8 @@ class ArchetypeRequest(BaseModel):
     position_group: Literal["GK","CB","LB","RB","DM","CM","LM","RM","AM","LW","RW","SS","CF"]
     objective: Objective = "balanced"
     top_k_categories: int = Field(5, ge=1, le=20)
+    include_transfers: bool = False
+    top_transfers: int = Field(20, ge=1, le=100)
 
 
 class DistributionItem(BaseModel):
@@ -137,6 +139,15 @@ class ArchetypeProfile(BaseModel):
     origin_league: list[DistributionItem]
 
 
+class TransferHistoryItem(BaseModel):
+    player_name: Optional[str] = None
+    player_id: Optional[int] = None
+    transfer_season: Optional[str] = None
+    from_club_name: Optional[str] = None
+    nationality: Optional[str] = None
+    origin_league: Optional[str] = None
+
+
 class ArchetypeResponse(BaseModel):
     club_name: str
     position_group: str
@@ -144,3 +155,4 @@ class ArchetypeResponse(BaseModel):
     profile_size: int
     confidence: Confidence
     archetype: ArchetypeProfile
+    transfers: Optional[list[TransferHistoryItem]] = None
