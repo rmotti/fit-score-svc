@@ -167,6 +167,7 @@ def profile(req: ArchetypeRequest):
         profile_size=data["profile_size"],
         confidence=data["confidence"],
         archetype=data["archetype"],
+        transfers=data.get("transfers"),
     )
 
 
