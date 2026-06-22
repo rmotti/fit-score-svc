@@ -4,11 +4,12 @@ from fastapi import FastAPI, HTTPException
 from app import profiles as store
 from app.schemas import (
     ScoreRequest, ScoreResponse,
+    ExplainRequest, ExplainResponse,
     BatchRequest, BatchResponse, BatchResultItem,
     RecommendRequest, RecommendResponse,
     ArchetypeRequest, ArchetypeResponse,
 )
-from app.scoring import compute_fit_score, recommend_candidates, get_club_archetype
+from app.scoring import compute_fit_score, explain_fit_score, recommend_candidates, get_club_archetype
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -54,6 +55,31 @@ def score(req: ScoreRequest):
         sample_size=req.sample_size,
     )
     return ScoreResponse(
+        club_name=req.club_name,
+        position_group=req.position_group,
+        objective=req.objective,
+        result=result,
+    )
+
+
+@app.post("/score/explain", response_model=ExplainResponse)
+def score_explain(req: ExplainRequest):
+    result = explain_fit_score(
+        club_profiles=store.club_profiles,
+        club_baselines=store.club_baselines,
+        club_name=req.club_name,
+        position_group=req.position_group,
+        nationality=req.candidate.nationality,
+        origin_league=req.candidate.origin_league,
+        age=req.candidate.age,
+        market_value_eur=req.candidate.market_value_eur,
+        fee_type=req.candidate.fee_type,
+        objective=req.objective,
+        age_scaler=store.age_scaler,
+        fee_scaler=store.fee_scaler,
+        sample_size=req.sample_size,
+    )
+    return ExplainResponse(
         club_name=req.club_name,
         position_group=req.position_group,
         objective=req.objective,

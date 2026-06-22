@@ -32,6 +32,34 @@ class ScoreResponse(BaseModel):
     objective: str
     result: ScoreResult
 
+class ExplainRequest(ScoreRequest):
+    """Mesma entrada do /score; devolve o fit + breakdown calibrado por conceito."""
+    pass
+
+
+class FitBreakdownItem(BaseModel):
+    key: Literal["nationality", "origin_league", "age", "cost"]
+    weight: float                  # 0-1, peso do conceito na Gower
+    score: Optional[float]         # 0-100 calibrado vs. as contratações reais do clube
+    candidate_value: str           # valor do candidato nessa dimensão (ex.: "England")
+    club_context: str              # resumo do que o clube costuma contratar
+
+
+class ExplainResult(BaseModel):
+    fit_score: Optional[float]
+    confidence: Confidence
+    profile_size: int
+    profile_found: bool
+    breakdown: list[FitBreakdownItem]
+
+
+class ExplainResponse(BaseModel):
+    club_name: str
+    position_group: str
+    objective: str
+    result: ExplainResult
+
+
 class BatchCandidate(BaseModel):
     candidate_id: str  # sofifaId como string
     candidate: CandidateInput

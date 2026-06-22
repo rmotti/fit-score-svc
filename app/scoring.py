@@ -181,18 +181,163 @@ def compute_fit_score(
     distances = dist_matrix[0, 1:]
     fit_score = round(float(calibrate(float(np.mean(distances)), baseline)), 1)
 
-    if profile_size >= 30:
-        confidence = "high"
-    elif profile_size >= 10:
-        confidence = "medium"
-    else:
-        confidence = "low"
-
     return {
         "fit_score": fit_score,
-        "confidence": confidence,
+        "confidence": _confidence(profile_size),
         "profile_size": profile_size,
         "profile_found": True,
+    }
+
+
+def _confidence(profile_size: int) -> str:
+    if profile_size >= 30:
+        return "high"
+    if profile_size >= 10:
+        return "medium"
+    return "low"
+
+
+# Conceitos do breakdown do fit. Agrupa fee_norm+fee_type num único "cost" (mesmo
+# racional do FEATURE_WEIGHTS: custo é um conceito só). Cada item lista as features
+# da Gower que o compõem; o peso do conceito é a soma dos pesos das suas features.
+_FIT_CONCEPTS = [
+    ("nationality", ["nationality"]),
+    ("origin_league", ["origin_league"]),
+    ("age", ["age_norm"]),
+    ("cost", ["fee_norm", "fee_type"]),
+]
+
+_FEE_TYPE_PT = {"paid": "compra", "free": "de graça", "undisclosed": "não revelado"}
+
+
+def _feature_cand_distances(profile: pd.DataFrame, feature: str, cand_value) -> np.ndarray:
+    """Distância da feature do candidato a cada membro do perfil (mesma lógica da Gower:
+    categórica = 0/1; numérica = |a-b| nos valores já normalizados)."""
+    idx = FEATURES.index(feature)
+    col = profile[feature].fillna("Other")
+    if CAT_FEATURES[idx]:
+        return (col.values != cand_value).astype(float)
+    return np.abs(col.values.astype(float) - float(cand_value))
+
+
+def _feature_loo(profile: pd.DataFrame, feature: str) -> np.ndarray:
+    """Distância leave-one-out de cada membro aos OUTROS naquela feature (a régua de
+    tipicidade da dimensão). Categórica: fração de outros com valor diferente."""
+    idx = FEATURES.index(feature)
+    col = profile[feature].fillna("Other")
+    n = len(col)
+    if CAT_FEATURES[idx]:
+        same_incl = col.map(col.value_counts()).values.astype(float)  # inclui o próprio
+        return (n - same_incl) / (n - 1)
+    x = col.values.astype(float)
+    return np.array([np.abs(x - x[i]).sum() / (n - 1) for i in range(n)])
+
+
+def _concept_context(profile: pd.DataFrame, key: str, age_scaler, fee_scaler) -> str:
+    """Resumo curto (PT) do que o clube costuma contratar naquela dimensão."""
+    if key in ("nationality", "origin_league"):
+        feature = "nationality" if key == "nationality" else "origin_league"
+        vc = profile[feature].fillna("Other").value_counts(normalize=True).head(2)
+        return " · ".join(f"{v} {p:.0%}" for v, p in vc.items())
+    if key == "age":
+        med_norm = float(profile["age_norm"].median())
+        if age_scaler is not None:
+            med = float(age_scaler.inverse_transform([[med_norm]])[0][0])
+        else:
+            med = med_norm * (_AGE_TRAIN_MAX - _AGE_TRAIN_MIN) + _AGE_TRAIN_MIN
+        return f"clube costuma ~{med:.0f} anos"
+    # cost
+    free_pct = (profile["fee_type"] == "free").mean()
+    med_norm = float(profile["fee_norm"].median())
+    if fee_scaler is not None:
+        med_log = float(fee_scaler.inverse_transform([[med_norm]])[0][0])
+    else:
+        med_log = med_norm * (_FEE_LOG_TRAIN_MAX - _FEE_LOG_TRAIN_MIN) + _FEE_LOG_TRAIN_MIN
+    med_eur = float(np.expm1(med_log))
+    return f"{free_pct:.0%} de graça · mediana €{med_eur / 1e6:.1f}M"
+
+
+def _candidate_value_str(key: str, nationality, origin_league, age, market_value_eur, fee_type) -> str:
+    if key == "nationality":
+        return nationality or "Other"
+    if key == "origin_league":
+        return origin_league or "unknown"
+    if key == "age":
+        return f"{age} anos"
+    mv = "sem valor" if not market_value_eur else f"€{market_value_eur / 1e6:.1f}M"
+    return f"{mv} · {_FEE_TYPE_PT.get(fee_type, fee_type)}"
+
+
+def explain_fit_score(
+    club_profiles: dict,
+    club_baselines: dict,
+    club_name: str,
+    position_group: str,
+    nationality: Optional[str],
+    origin_league: Optional[str],
+    age: int,
+    market_value_eur: Optional[float],
+    fee_type: str,
+    objective: str,
+    age_scaler: Optional[MinMaxScaler],
+    fee_scaler: Optional[MinMaxScaler],
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
+    min_profile_size: int = 5,
+) -> dict:
+    """Fit geral + breakdown calibrado por conceito (atribuição, não decomposição exata:
+    o geral é o percentil da distância agregada; cada linha é o percentil da dimensão)."""
+    empty = {"fit_score": None, "confidence": "none", "profile_size": 0,
+             "profile_found": False, "breakdown": []}
+
+    profile = club_profiles.get((club_name, position_group))
+    if profile is None or len(profile) == 0:
+        return empty
+
+    profile = _prepare_profile(profile, objective, sample_size).reset_index(drop=True)
+    profile_size = len(profile)
+    baseline = club_baselines.get((club_name, position_group, objective))
+    if profile_size < min_profile_size or baseline is None:
+        return {"fit_score": None, "confidence": "low", "profile_size": profile_size,
+                "profile_found": True, "breakdown": []}
+
+    age_norm = max(0.0, min(1.0, normalize_age(age, age_scaler)))
+    fee_norm = max(0.0, min(1.0, normalize_fee(market_value_eur, fee_scaler)))
+    cand_vals = {
+        "nationality": nationality or "Other",
+        "origin_league": origin_league or "unknown",
+        "age_norm": age_norm,
+        "fee_norm": fee_norm,
+        "fee_type": fee_type,
+    }
+
+    # fit geral — reusa compute_fit_score pra garantir o MESMO número do /score
+    overall = compute_fit_score(
+        club_profiles, {}, club_baselines, club_name, position_group,
+        nationality, origin_league, age, market_value_eur, fee_type, objective,
+        age_scaler, fee_scaler, sample_size, min_profile_size,
+    )
+
+    total_w = float(FEATURE_WEIGHTS.sum())
+    breakdown = []
+    for key, feats in _FIT_CONCEPTS:
+        cand_per_member = np.mean([_feature_cand_distances(profile, f, cand_vals[f]) for f in feats], axis=0)
+        loo = np.mean([_feature_loo(profile, f) for f in feats], axis=0)
+        score = round(float(calibrate(cand_per_member.mean(), np.sort(loo))), 1)
+        weight = sum(FEATURE_WEIGHTS[FEATURES.index(f)] for f in feats) / total_w
+        breakdown.append({
+            "key": key,
+            "weight": round(weight, 3),
+            "score": score,
+            "candidate_value": _candidate_value_str(key, nationality, origin_league, age, market_value_eur, fee_type),
+            "club_context": _concept_context(profile, key, age_scaler, fee_scaler),
+        })
+
+    return {
+        "fit_score": overall["fit_score"],
+        "confidence": _confidence(profile_size),
+        "profile_size": profile_size,
+        "profile_found": True,
+        "breakdown": breakdown,
     }
 
 
