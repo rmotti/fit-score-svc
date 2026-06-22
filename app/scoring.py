@@ -418,9 +418,9 @@ def get_club_archetype(
     position_group: str,
     objective: str,
     age_scaler: Optional[MinMaxScaler],
-    fee_scaler: Optional[MinMaxScaler],
     top_k_categories: int = 5,
     min_profile_size: int = 5,
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
 ) -> dict:
     key = (club_name, position_group)
     profile = club_profiles.get(key)
@@ -428,7 +428,7 @@ def get_club_archetype(
     if profile is None or len(profile) == 0:
         return {"error": "profile_not_found", "profile_size": 0}
 
-    profile = OBJECTIVE_FILTERS[objective](profile).copy()
+    profile = _prepare_profile(profile, objective, sample_size)
     profile_size = len(profile)
 
     if profile_size < min_profile_size:
@@ -440,13 +440,6 @@ def get_club_archetype(
     else:
         ages = (ages_norm.flatten() * (_AGE_TRAIN_MAX - _AGE_TRAIN_MIN)) + _AGE_TRAIN_MIN
 
-    fees_norm = profile["fee_norm"].values.reshape(-1, 1)
-    if fee_scaler is not None:
-        fees_log = fee_scaler.inverse_transform(fees_norm).flatten()
-    else:
-        fees_log = (fees_norm.flatten() * (_FEE_LOG_TRAIN_MAX - _FEE_LOG_TRAIN_MIN)) + _FEE_LOG_TRAIN_MIN
-    fees = np.expm1(fees_log)
-
     def top_distribution(series: pd.Series, k: int) -> list:
         counts = series.fillna("Other").value_counts()
         total = len(series)
@@ -455,28 +448,15 @@ def get_club_archetype(
             for val, cnt in counts.head(k).items()
         ]
 
-    if profile_size >= 30:
-        confidence = "high"
-    elif profile_size >= 10:
-        confidence = "medium"
-    else:
-        confidence = "low"
-
     return {
         "profile_size": profile_size,
-        "confidence": confidence,
+        "confidence": _confidence(profile_size),
         "archetype": {
             "age": {
                 "median": round(float(np.median(ages)), 1),
                 "p25": round(float(np.percentile(ages, 25)), 1),
                 "p75": round(float(np.percentile(ages, 75)), 1),
             },
-            "market_value_eur": {
-                "median": round(float(np.median(fees))),
-                "p25": round(float(np.percentile(fees, 25))),
-                "p75": round(float(np.percentile(fees, 75))),
-            },
-            "fee_type": top_distribution(profile["fee_type"], top_k_categories),
             "nationality": top_distribution(profile["nationality"], top_k_categories),
             "origin_league": top_distribution(profile["origin_league"], top_k_categories),
         },

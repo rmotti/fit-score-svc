@@ -152,7 +152,6 @@ def profile(req: ArchetypeRequest):
         position_group=req.position_group,
         objective=req.objective,
         age_scaler=store.age_scaler,
-        fee_scaler=store.fee_scaler,
         top_k_categories=req.top_k_categories,
     )
     if data.get("error") == "profile_not_found":

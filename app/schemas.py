@@ -133,8 +133,6 @@ class ArchetypeStats(BaseModel):
 
 class ArchetypeProfile(BaseModel):
     age: ArchetypeStats
-    market_value_eur: ArchetypeStats
-    fee_type: list[DistributionItem]
     nationality: list[DistributionItem]
     origin_league: list[DistributionItem]
 
