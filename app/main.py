@@ -6,8 +6,9 @@ from app.schemas import (
     ScoreRequest, ScoreResponse,
     BatchRequest, BatchResponse, BatchResultItem,
     RecommendRequest, RecommendResponse,
+    ArchetypeRequest, ArchetypeResponse,
 )
-from app.scoring import compute_fit_score, recommend_candidates
+from app.scoring import compute_fit_score, recommend_candidates, get_club_archetype
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ def score(req: ScoreRequest):
     result = compute_fit_score(
         club_profiles=store.club_profiles,
         position_index=store.position_index,
+        club_baselines=store.club_baselines,
         club_name=req.club_name,
         position_group=req.position_group,
         nationality=req.candidate.nationality,
@@ -66,6 +68,7 @@ def score_batch(req: BatchRequest):
         result = compute_fit_score(
             club_profiles=store.club_profiles,
             position_index=store.position_index,
+            club_baselines=store.club_baselines,
             club_name=req.club_name,
             position_group=req.position_group,
             nationality=item.candidate.nationality,
@@ -93,6 +96,7 @@ def recommend(req: RecommendRequest):
     data = recommend_candidates(
         club_profiles=store.club_profiles,
         position_index=store.position_index,
+        club_baselines=store.club_baselines,
         club_name=req.club_name,
         position_group=req.position_group,
         objective=req.objective,
@@ -111,6 +115,31 @@ def recommend(req: RecommendRequest):
         profile_size=data["profile_size"],
         candidates_evaluated=data["candidates_evaluated"],
         results=data["results"],
+    )
+
+
+@app.post("/profile", response_model=ArchetypeResponse)
+def profile(req: ArchetypeRequest):
+    data = get_club_archetype(
+        club_profiles=store.club_profiles,
+        club_name=req.club_name,
+        position_group=req.position_group,
+        objective=req.objective,
+        age_scaler=store.age_scaler,
+        fee_scaler=store.fee_scaler,
+        top_k_categories=req.top_k_categories,
+    )
+    if data.get("error") == "profile_not_found":
+        raise HTTPException(status_code=404, detail=f"Perfil não encontrado para '{req.club_name}' / {req.position_group}")
+    if data.get("error") == "profile_too_small":
+        raise HTTPException(status_code=422, detail=f"Perfil muito pequeno (< 5 transferências) para '{req.club_name}' / {req.position_group}")
+    return ArchetypeResponse(
+        club_name=req.club_name,
+        position_group=req.position_group,
+        objective=req.objective,
+        profile_size=data["profile_size"],
+        confidence=data["confidence"],
+        archetype=data["archetype"],
     )
 
 

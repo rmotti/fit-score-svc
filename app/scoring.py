@@ -18,6 +18,21 @@ OBJECTIVE_FILTERS = {
 FEATURES = ["nationality", "origin_league", "age_norm", "fee_norm", "fee_type"]
 CAT_FEATURES = [True, True, False, False, True]  # mesmo índice que FEATURES
 
+# Pesos por feature na Gower. `fee_norm` e `fee_type` codificam a MESMA ideia (custo) e
+# são correlacionados (free ⇒ fee_norm=0), então com peso igual o custo somaria 40% da
+# distância — duplo-contagem. Aqui custo = um conceito só (0.25 total, 0.125 cada), igual
+# a nacionalidade/liga/idade (0.25 cada). Sem isso, um candidato pago despencava em clubes
+# de histórico free-dominado (ex.: Inter CF: 18 → 51). O dado de fee do dataset também é
+# incompleto (muitos pagos registrados como free/0), o que reforça não confiar nele a 40%.
+# IMPORTANTE: usado em TODA gower_matrix (baseline E scoring) — a régua precisa ser a mesma.
+FEATURE_WEIGHTS = np.array([1.0, 1.0, 1.0, 0.5, 0.5])
+
+# Cap padrão de amostragem do perfil. Usado no scoring E na pré-computação dos
+# baselines (profiles.load_artifacts) — precisam usar o MESMO subset pra calibração
+# ser consistente. Perfis reais hoje têm no máx ~257 membros, então o cap nunca
+# dispara na prática; mantê-lo idêntico nos dois caminhos é uma garantia, não um custo.
+DEFAULT_SAMPLE_SIZE = 2000
+
 # Fallback: min/max observados no dataset de treino (FitScoreMl.ipynb, cell 14+20)
 _AGE_TRAIN_MIN = 14.8
 _AGE_TRAIN_MAX = 43.3
@@ -40,9 +55,73 @@ def normalize_fee(market_value_eur: Optional[float], scaler: Optional[MinMaxScal
     return (log_fee - _FEE_LOG_TRAIN_MIN) / (_FEE_LOG_TRAIN_MAX - _FEE_LOG_TRAIN_MIN)
 
 
+def _prepare_profile(profile: pd.DataFrame, objective: str, sample_size: int) -> pd.DataFrame:
+    """Filtra o perfil pelo objetivo e aplica o cap de amostragem.
+
+    Fonte única de verdade pro subset do perfil — usada tanto no scoring quanto na
+    pré-computação do baseline, pra que candidato e baseline sejam medidos contra
+    exatamente o mesmo conjunto de contratações.
+    """
+    profile = OBJECTIVE_FILTERS[objective](profile).copy()
+    if len(profile) > sample_size:
+        profile = profile.sample(sample_size, random_state=42)
+    return profile
+
+
+def compute_baseline(profile: pd.DataFrame) -> Optional[np.ndarray]:
+    """Distâncias Gower leave-one-out de cada membro do perfil contra os demais.
+
+    Representa "como uma contratação típica desse clube encaixa nesse clube" — a
+    régua contra a qual o candidato é calibrado. Retorna o vetor ORDENADO (asc), ou
+    None se o perfil tiver < 2 membros (sem par possível).
+    """
+    n = len(profile)
+    if n < 2:
+        return None
+    feats = profile[FEATURES].fillna("Other")
+    try:
+        m = gower.gower_matrix(feats, weight=FEATURE_WEIGHTS, cat_features=CAT_FEATURES)
+    except Exception as e:
+        logger.error(f"Erro ao computar baseline Gower: {e}")
+        return None
+    np.fill_diagonal(m, np.nan)            # exclui a distância do membro a si mesmo
+    loo = np.nanmean(m, axis=1)
+    return np.sort(loo)
+
+
+def calibrate(cand_dist, baseline: np.ndarray):
+    """Mapeia a distância média do candidato pra 0–100 contra o baseline do perfil.
+
+    Score = % de contratações reais do clube que encaixam PIOR que o candidato.
+    Menor distância → score maior. Interpolação linear na CDF empírica do baseline
+    evita saturação no topo. Aceita escalar ou array (np.interp vetoriza e faz clamp
+    nos extremos, então o resultado já fica em [0, 100]).
+    """
+    n = len(baseline)
+    cdf = np.interp(cand_dist, baseline, np.linspace(0.0, 1.0, n))
+    return (1.0 - cdf) * 100.0
+
+
+def build_all_baselines(club_profiles: dict, sample_size: int = DEFAULT_SAMPLE_SIZE) -> dict:
+    """Pré-computa o baseline de cada (club, position_group, objective).
+
+    Chamado uma vez no boot do serviço. Custo medido: ~3s / ~0.3 MB pros 4.010 perfis
+    × 4 objetivos. Chave do dict resultante: (club_name, position_group, objective).
+    """
+    baselines = {}
+    for (club, pos), profile in club_profiles.items():
+        for objective in OBJECTIVE_FILTERS:
+            subset = _prepare_profile(profile, objective, sample_size)
+            base = compute_baseline(subset)
+            if base is not None:
+                baselines[(club, pos, objective)] = base
+    return baselines
+
+
 def compute_fit_score(
     club_profiles: dict,
     position_index: dict,
+    club_baselines: dict,
     club_name: str,
     position_group: str,
     nationality: Optional[str],
@@ -53,7 +132,7 @@ def compute_fit_score(
     objective: str,
     age_scaler: Optional[MinMaxScaler],
     fee_scaler: Optional[MinMaxScaler],
-    sample_size: int = 2000,
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
     min_profile_size: int = 5,
 ) -> dict:
     key = (club_name, position_group)
@@ -62,14 +141,17 @@ def compute_fit_score(
     if profile is None or len(profile) == 0:
         return {"fit_score": None, "confidence": "none", "profile_size": 0, "profile_found": False}
 
-    profile = OBJECTIVE_FILTERS[objective](profile).copy()
+    profile = _prepare_profile(profile, objective, sample_size)
     profile_size = len(profile)
 
     if profile_size < min_profile_size:
         return {"fit_score": None, "confidence": "low", "profile_size": profile_size, "profile_found": True}
 
-    if profile_size > sample_size:
-        profile = profile.sample(sample_size, random_state=42)
+    baseline = club_baselines.get((club_name, position_group, objective))
+    if baseline is None:
+        # Não deveria ocorrer (profile_size >= 5 garante baseline), mas é o degrau
+        # seguro: sem régua de calibração não há score.
+        return {"fit_score": None, "confidence": "low", "profile_size": profile_size, "profile_found": True}
 
     age_norm = normalize_age(age, age_scaler)
     fee_norm = normalize_fee(market_value_eur, fee_scaler)
@@ -91,14 +173,13 @@ def compute_fit_score(
     combined = pd.concat([candidate_df, profile_features], ignore_index=True)
 
     try:
-        dist_matrix = gower.gower_matrix(combined, cat_features=CAT_FEATURES)
+        dist_matrix = gower.gower_matrix(combined, weight=FEATURE_WEIGHTS, cat_features=CAT_FEATURES)
     except Exception as e:
         logger.error(f"Erro ao calcular Gower distance: {e}")
         return {"fit_score": None, "confidence": "none", "profile_size": profile_size, "profile_found": True}
 
     distances = dist_matrix[0, 1:]
-    fit_score = float(1.0 - float(np.mean(distances)))
-    fit_score = round(max(0.0, min(1.0, fit_score)), 4)
+    fit_score = round(float(calibrate(float(np.mean(distances)), baseline)), 1)
 
     if profile_size >= 30:
         confidence = "high"
@@ -118,6 +199,7 @@ def compute_fit_score(
 def recommend_candidates(
     club_profiles: dict,
     position_index: dict,
+    club_baselines: dict,
     club_name: str,
     position_group: str,
     objective: str,
@@ -125,7 +207,7 @@ def recommend_candidates(
     fee_type: Optional[str],
     fee_scaler: Optional[MinMaxScaler],
     top_k: int = 20,
-    sample_size: int = 2000,
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
     min_profile_size: int = 5,
 ) -> dict:
     key = (club_name, position_group)
@@ -134,14 +216,15 @@ def recommend_candidates(
     if profile is None or len(profile) == 0:
         return {"error": "profile_not_found", "profile_size": 0, "candidates_evaluated": 0, "results": []}
 
-    profile = OBJECTIVE_FILTERS[objective](profile).copy()
+    profile = _prepare_profile(profile, objective, sample_size)
     profile_size = len(profile)
 
     if profile_size < min_profile_size:
         return {"error": "profile_too_small", "profile_size": profile_size, "candidates_evaluated": 0, "results": []}
 
-    if profile_size > sample_size:
-        profile = profile.sample(sample_size, random_state=42)
+    baseline = club_baselines.get((club_name, position_group, objective))
+    if baseline is None:
+        return {"error": "profile_too_small", "profile_size": profile_size, "candidates_evaluated": 0, "results": []}
 
     candidates = position_index.get(position_group)
     if candidates is None or len(candidates) == 0:
@@ -172,13 +255,13 @@ def recommend_candidates(
     combined = pd.concat([candidate_features, profile_features], ignore_index=True)
 
     try:
-        dist_matrix = gower.gower_matrix(combined, cat_features=CAT_FEATURES)
+        dist_matrix = gower.gower_matrix(combined, weight=FEATURE_WEIGHTS, cat_features=CAT_FEATURES)
     except Exception as e:
         logger.error(f"Erro ao calcular Gower distance (recommend): {e}")
         return {"error": "gower_error", "profile_size": profile_size, "candidates_evaluated": n_candidates, "results": []}
 
     mean_distances = dist_matrix[:n_candidates, n_candidates:].mean(axis=1)
-    fit_scores = np.clip(1.0 - mean_distances, 0.0, 1.0)
+    fit_scores = calibrate(mean_distances, baseline)  # 0–100, calibrado vs baseline
 
     candidates = candidates.reset_index(drop=True).copy()
     candidates["fit_score"] = fit_scores
@@ -192,7 +275,7 @@ def recommend_candidates(
     results = []
     for _, row in top.iterrows():
         results.append({
-            "fit_score": round(float(row["fit_score"]), 4),
+            "fit_score": round(float(row["fit_score"]), 1),
             "player_id": int(row["player_id"]) if "player_id" in row and pd.notna(row.get("player_id")) else None,
             "player_name": row.get("player_name") if pd.notna(row.get("player_name")) else None,
             "nationality": row.get("nationality"),
@@ -205,4 +288,75 @@ def recommend_candidates(
         "profile_size": profile_size,
         "candidates_evaluated": n_candidates,
         "results": results,
+    }
+
+
+def get_club_archetype(
+    club_profiles: dict,
+    club_name: str,
+    position_group: str,
+    objective: str,
+    age_scaler: Optional[MinMaxScaler],
+    fee_scaler: Optional[MinMaxScaler],
+    top_k_categories: int = 5,
+    min_profile_size: int = 5,
+) -> dict:
+    key = (club_name, position_group)
+    profile = club_profiles.get(key)
+
+    if profile is None or len(profile) == 0:
+        return {"error": "profile_not_found", "profile_size": 0}
+
+    profile = OBJECTIVE_FILTERS[objective](profile).copy()
+    profile_size = len(profile)
+
+    if profile_size < min_profile_size:
+        return {"error": "profile_too_small", "profile_size": profile_size}
+
+    ages_norm = profile["age_norm"].values.reshape(-1, 1)
+    if age_scaler is not None:
+        ages = age_scaler.inverse_transform(ages_norm).flatten()
+    else:
+        ages = (ages_norm.flatten() * (_AGE_TRAIN_MAX - _AGE_TRAIN_MIN)) + _AGE_TRAIN_MIN
+
+    fees_norm = profile["fee_norm"].values.reshape(-1, 1)
+    if fee_scaler is not None:
+        fees_log = fee_scaler.inverse_transform(fees_norm).flatten()
+    else:
+        fees_log = (fees_norm.flatten() * (_FEE_LOG_TRAIN_MAX - _FEE_LOG_TRAIN_MIN)) + _FEE_LOG_TRAIN_MIN
+    fees = np.expm1(fees_log)
+
+    def top_distribution(series: pd.Series, k: int) -> list:
+        counts = series.fillna("Other").value_counts()
+        total = len(series)
+        return [
+            {"value": str(val), "count": int(cnt), "pct": round(float(cnt) / total, 3)}
+            for val, cnt in counts.head(k).items()
+        ]
+
+    if profile_size >= 30:
+        confidence = "high"
+    elif profile_size >= 10:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {
+        "profile_size": profile_size,
+        "confidence": confidence,
+        "archetype": {
+            "age": {
+                "median": round(float(np.median(ages)), 1),
+                "p25": round(float(np.percentile(ages, 25)), 1),
+                "p75": round(float(np.percentile(ages, 75)), 1),
+            },
+            "market_value_eur": {
+                "median": round(float(np.median(fees))),
+                "p25": round(float(np.percentile(fees, 25))),
+                "p75": round(float(np.percentile(fees, 75))),
+            },
+            "fee_type": top_distribution(profile["fee_type"], top_k_categories),
+            "nationality": top_distribution(profile["nationality"], top_k_categories),
+            "origin_league": top_distribution(profile["origin_league"], top_k_categories),
+        },
     }

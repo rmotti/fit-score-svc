@@ -19,6 +19,8 @@ class ScoreRequest(BaseModel):
     sample_size: int = Field(2000, ge=100, le=10000)
 
 class ScoreResult(BaseModel):
+    # 0–100: percentil do candidato vs. o DNA real do clube (% de contratações reais
+    # que encaixam pior). null quando o perfil é pequeno demais pra calibrar.
     fit_score: Optional[float]
     confidence: Confidence
     profile_size: int
@@ -43,7 +45,7 @@ class BatchRequest(BaseModel):
 
 class BatchResultItem(BaseModel):
     candidate_id: str
-    fit_score: Optional[float]
+    fit_score: Optional[float]  # 0–100, calibrado vs. baseline do clube (ver ScoreResult)
     confidence: Confidence
     profile_size: int
 
@@ -65,7 +67,7 @@ class RecommendRequest(BaseModel):
 
 
 class RecommendResultItem(BaseModel):
-    fit_score: float
+    fit_score: float  # 0–100, calibrado vs. baseline do clube (ver ScoreResult)
     player_id: Optional[int] = None
     player_name: Optional[str] = None
     nationality: Optional[str] = None
@@ -80,3 +82,39 @@ class RecommendResponse(BaseModel):
     profile_size: int
     candidates_evaluated: int
     results: list[RecommendResultItem]
+
+
+class ArchetypeRequest(BaseModel):
+    club_name: str
+    position_group: Literal["GK","CB","LB","RB","DM","CM","LM","RM","AM","LW","RW","SS","CF"]
+    objective: Objective = "balanced"
+    top_k_categories: int = Field(5, ge=1, le=20)
+
+
+class DistributionItem(BaseModel):
+    value: str
+    count: int
+    pct: float
+
+
+class ArchetypeStats(BaseModel):
+    median: float
+    p25: float
+    p75: float
+
+
+class ArchetypeProfile(BaseModel):
+    age: ArchetypeStats
+    market_value_eur: ArchetypeStats
+    fee_type: list[DistributionItem]
+    nationality: list[DistributionItem]
+    origin_league: list[DistributionItem]
+
+
+class ArchetypeResponse(BaseModel):
+    club_name: str
+    position_group: str
+    objective: str
+    profile_size: int
+    confidence: Confidence
+    archetype: ArchetypeProfile

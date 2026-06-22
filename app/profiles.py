@@ -1,8 +1,11 @@
 import pickle
 import json
 import logging
+import time
 from pathlib import Path
 from sklearn.preprocessing import MinMaxScaler
+
+from app.scoring import build_all_baselines
 
 logger = logging.getLogger(__name__)
 
@@ -10,13 +13,14 @@ ARTIFACTS_DIR = Path(__file__).parent.parent / "artifacts"
 
 club_profiles: dict = {}
 position_index: dict = {}
+club_baselines: dict = {}
 metadata: dict = {}
 age_scaler: MinMaxScaler | None = None
 fee_scaler: MinMaxScaler | None = None
 
 
 def load_artifacts():
-    global club_profiles, position_index, metadata, age_scaler, fee_scaler
+    global club_profiles, position_index, club_baselines, metadata, age_scaler, fee_scaler
 
     logger.info("Carregando artefatos...")
 
@@ -48,4 +52,14 @@ def load_artifacts():
     logger.info(
         f"Artefatos carregados: {len(club_profiles)} perfis, "
         f"{len(position_index)} grupos de posição"
+    )
+
+    # Baselines de calibração (leave-one-out por club×posição×objetivo). Derivados
+    # dos perfis em memória — imutáveis e idênticos em toda réplica, igual aos perfis.
+    # ~3s pros 4.010 perfis × 4 objetivos; evita re-rodar o notebook / novo artefato.
+    t0 = time.perf_counter()
+    club_baselines = build_all_baselines(club_profiles)
+    logger.info(
+        f"Baselines de calibração: {len(club_baselines)} "
+        f"(club×posição×objetivo) em {time.perf_counter() - t0:.1f}s"
     )
