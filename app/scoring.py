@@ -469,6 +469,12 @@ def get_club_archetype(
         df = profile.copy()
         if "transfer_season" in df.columns:
             df = df.sort_values("transfer_season", ascending=False, na_position="last")
+        # Collapse loan round-trips: the same player coming FROM the same club is one signing
+        # (loan-out then loan-return shows up as repeated identical from_club rows). Keep the
+        # most recent (df is already sorted desc). A player signed from DIFFERENT clubs across
+        # spells stays as separate rows — that's a real, distinct transfer, not noise.
+        if "player_id" in df.columns and "from_club_name" in df.columns:
+            df = df.drop_duplicates(subset=["player_id", "from_club_name"], keep="first")
         transfers = []
         for _, row in df.head(top_transfers).iterrows():
             transfers.append({
