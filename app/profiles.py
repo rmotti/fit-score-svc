@@ -3,6 +3,8 @@ import json
 import logging
 import time
 from pathlib import Path
+
+import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 
 from app.scoring import build_all_baselines
@@ -10,6 +12,20 @@ from app.scoring import build_all_baselines
 logger = logging.getLogger(__name__)
 
 ARTIFACTS_DIR = Path(__file__).parent.parent / "artifacts"
+
+# Agrupamento de posições em buckets amplos (paliativo p/ o dataset pequeno: a mediana
+# por (clube × posição) é ~7 transferências; agregando em buckets a mediana sobe p/ ~9 e
+# a fração de perfis robustos (n>=10) vai de 21% p/ 48%). Os buckets são adicionados em
+# memória ALÉM dos 13 grupos granulares — as 13 chaves antigas continuam funcionando,
+# então é backward-compatible. GK fica isolado (não há com o que agrupar).
+# Trade-off: perde-se granularidade tática (CF+SS+RW+LW viram "ATT"); aceitável enquanto
+# o cohort granular é raso demais p/ calibrar bem. Reverter = remover esta seção.
+POSITION_BUCKETS: dict[str, str] = {
+    "GK": "GK",
+    "CB": "DEF", "RB": "DEF", "LB": "DEF",
+    "DM": "MID", "CM": "MID", "AM": "MID", "RM": "MID", "LM": "MID",
+    "CF": "ATT", "SS": "ATT", "RW": "ATT", "LW": "ATT",
+}
 
 club_profiles: dict = {}
 position_index: dict = {}
@@ -54,6 +70,16 @@ def load_artifacts():
         f"{len(position_index)} grupos de posição"
     )
 
+    # Buckets de posição: concatena os perfis granulares de cada bucket numa nova chave
+    # (club, "MID" / "DEF" / "ATT" / "GK"). Feito ANTES dos baselines p/ que estes saiam
+    # de graça (build_all_baselines deriva de tudo que está no dict). As chaves granulares
+    # são preservadas; nenhuma função de scoring precisa mudar — só recebe o nome do bucket.
+    _add_position_buckets()
+    logger.info(
+        f"Buckets de posição aplicados: {len(club_profiles)} perfis no total "
+        f"(13 granulares + buckets agregados)"
+    )
+
     # Baselines de calibração (leave-one-out por club×posição×objetivo). Derivados
     # dos perfis em memória — imutáveis e idênticos em toda réplica, igual aos perfis.
     # ~3s pros 4.010 perfis × 4 objetivos; evita re-rodar o notebook / novo artefato.
@@ -63,3 +89,36 @@ def load_artifacts():
         f"Baselines de calibração: {len(club_baselines)} "
         f"(club×posição×objetivo) em {time.perf_counter() - t0:.1f}s"
     )
+
+
+def _add_position_buckets():
+    """Adiciona entradas de bucket (club, BUCKET) a club_profiles e position_index,
+    concatenando os perfis/candidatos das posições granulares mapeadas pra cada bucket.
+    Idempotente: pula buckets que coincidem com um grupo já existente (ex: GK)."""
+    global club_profiles, position_index
+
+    # club_profiles: agrega por (club, bucket)
+    grouped: dict[tuple[str, str], list] = {}
+    for (club, pos), profile in list(club_profiles.items()):
+        bucket = POSITION_BUCKETS.get(pos)
+        if bucket is None or bucket == pos:
+            continue  # posição sem bucket, ou bucket == granular (GK) — nada a agregar
+        grouped.setdefault((club, bucket), []).append(profile)
+
+    for (club, bucket), frames in grouped.items():
+        if (club, bucket) in club_profiles:
+            continue  # já existe (não sobrescreve)
+        club_profiles[(club, bucket)] = pd.concat(frames, ignore_index=True)
+
+    # position_index: agrega os candidatos por bucket (mesma lógica)
+    idx_grouped: dict[str, list] = {}
+    for pos, candidates in list(position_index.items()):
+        bucket = POSITION_BUCKETS.get(pos)
+        if bucket is None or bucket == pos:
+            continue
+        idx_grouped.setdefault(bucket, []).append(candidates)
+
+    for bucket, frames in idx_grouped.items():
+        if bucket in position_index:
+            continue
+        position_index[bucket] = pd.concat(frames, ignore_index=True)
