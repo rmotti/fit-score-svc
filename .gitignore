@@ -219,3 +219,4 @@ __marimo__/
 
 # Datasets brutos (não commitar CSVs grandes)
 artifacts/*.csv
+.DS_Store
