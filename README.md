@@ -11,7 +11,12 @@ The service supports four core use cases:
 - **Recommender** — suggest best-fitting players for a specific club/position combination
 - **Health & Metadata** — system status and model information
 
-The model was trained on 62,383 transfers (1999–2027) spanning 3,872 clubs and 13 position groups.
+The model was trained on 62,383 transfers (1999–2027) spanning 3,872 clubs and 13 position groups. At runtime the 13 granular positions are also aggregated into 4 broad buckets (GK/DEF/MID/ATT) to keep cohorts robust against the small per-position dataset — see [docs/position-buckets.md](docs/position-buckets.md).
+
+## Documentation
+
+- [docs/fit-score-calibration.md](docs/fit-score-calibration.md) — why the score is a percentile against the club's internal dispersion (0–100 scale).
+- [docs/position-buckets.md](docs/position-buckets.md) — why positions are aggregated into GK/DEF/MID/ATT buckets, and how to revert.
 
 ## Tech Stack
 
