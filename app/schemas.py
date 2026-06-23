@@ -4,6 +4,14 @@ from typing import Literal, Optional
 Objective = Literal["rebuild", "youth", "title", "balanced"]
 Confidence = Literal["high", "medium", "low", "none"]
 
+# 13 grupos granulares + 4 buckets amplos (GK/DEF/MID/ATT). Os buckets agregam as posições
+# granulares em memória no boot (ver app/profiles.py POSITION_BUCKETS) p/ compensar o dataset
+# histórico pequeno; ambos são aceitos. O cliente (career-hub-api) hoje envia os buckets.
+PositionGroup = Literal[
+    "GK", "CB", "LB", "RB", "DM", "CM", "LM", "RM", "AM", "LW", "RW", "SS", "CF",
+    "DEF", "MID", "ATT",
+]
+
 class CandidateInput(BaseModel):
     nationality: Optional[str] = None
     origin_league: Optional[str] = None
@@ -13,7 +21,7 @@ class CandidateInput(BaseModel):
 
 class ScoreRequest(BaseModel):
     club_name: str
-    position_group: Literal["GK","CB","LB","RB","DM","CM","LM","RM","AM","LW","RW","SS","CF"]
+    position_group: PositionGroup
     candidate: CandidateInput
     objective: Objective = "balanced"
     sample_size: int = Field(2000, ge=100, le=10000)
@@ -66,7 +74,7 @@ class BatchCandidate(BaseModel):
 
 class BatchRequest(BaseModel):
     club_name: str
-    position_group: Literal["GK","CB","LB","RB","DM","CM","LM","RM","AM","LW","RW","SS","CF"]
+    position_group: PositionGroup
     objective: Objective = "balanced"
     candidates: list[BatchCandidate] = Field(..., min_length=1, max_length=100)
     sample_size: int = Field(2000, ge=100, le=10000)
@@ -86,7 +94,7 @@ class BatchResponse(BaseModel):
 
 class RecommendRequest(BaseModel):
     club_name: str
-    position_group: Literal["GK","CB","LB","RB","DM","CM","LM","RM","AM","LW","RW","SS","CF"]
+    position_group: PositionGroup
     objective: Objective = "balanced"
     max_market_value_eur: Optional[float] = Field(None, ge=0)
     fee_type: Optional[Literal["paid", "free", "undisclosed"]] = None
@@ -114,7 +122,7 @@ class RecommendResponse(BaseModel):
 
 class ArchetypeRequest(BaseModel):
     club_name: str
-    position_group: Literal["GK","CB","LB","RB","DM","CM","LM","RM","AM","LW","RW","SS","CF"]
+    position_group: PositionGroup
     objective: Objective = "balanced"
     top_k_categories: int = Field(5, ge=1, le=20)
     include_transfers: bool = False
